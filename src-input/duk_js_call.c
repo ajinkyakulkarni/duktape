@@ -509,6 +509,8 @@ DUK_LOCAL void duk__handle_bound_chain_for_call(duk_hthread *thr,
 	 * but we don't rely on that below.
 	 */
 
+	DUK_ASSERT(duk_get_top(ctx) >= idx_func + 2);
+
 	tv_func = duk_require_tval(ctx, idx_func);
 	DUK_ASSERT(tv_func != NULL);
 
@@ -563,6 +565,8 @@ DUK_LOCAL void duk__handle_bound_chain_for_call(duk_hthread *thr,
 		DUK_ERROR_INTERNAL(thr);
 	}
 
+	DUK_ASSERT(duk_get_top(ctx) >= idx_func + 2);
+
 	DUK_DDD(DUK_DDDPRINT("final non-bound function is: %!T", duk_get_tval(ctx, idx_func)));
 
 #if defined(DUK_USE_ASSERTIONS)
@@ -584,6 +588,7 @@ DUK_LOCAL void duk__handle_bound_chain_for_call(duk_hthread *thr,
 
 DUK_LOCAL void duk__handle_callapply_for_call(duk_hthread *thr, duk_idx_t idx_func, duk_hobject *func) {
 	duk_context *ctx = (duk_context *) thr;
+	duk_tval *tv_args;
 #if defined(DUK_USE_ASSERTIONS)
 	duk_c_function natfunc;
 #endif
@@ -592,6 +597,9 @@ DUK_LOCAL void duk__handle_callapply_for_call(duk_hthread *thr, duk_idx_t idx_fu
 	natfunc = ((duk_hnatfunc *) func)->func;
 	DUK_ASSERT(natfunc != NULL);
 #endif
+
+	DUK_ASSERT(duk_get_top(ctx) >= idx_func + 2);
+	duk_remove(ctx, idx_func);
 
 	/* Handle .call() and .apply() based on them having the
 	 * DUK_HOBJECT_FLAG_SPECIAL_CALL flag; their magic value
@@ -603,7 +611,7 @@ DUK_LOCAL void duk__handle_callapply_for_call(duk_hthread *thr, duk_idx_t idx_fu
 	switch (((duk_hnatfunc *) func)->magic) {
 	case 0: {  /* 0=Function.prototype.call() */
 		/* Value stack:
-		 * idx_func + 0: Function.prototype.call()
+		 * idx_func + 0: Function.prototype.call()  [already removed above]
 		 * idx_func + 1: this binding for .call (target function)
 		 * idx_func + 2: 1st argument to .call, desired 'this' binding
 		 * idx_func + 3: 2nd argument to .call, desired 1st argument for ultimate target
@@ -616,15 +624,16 @@ DUK_LOCAL void duk__handle_callapply_for_call(duk_hthread *thr, duk_idx_t idx_fu
 		 * ...
 		 */
 		DUK_ASSERT(natfunc == duk_bi_function_prototype_call);
-		while (duk_get_top(ctx) < idx_func + 3) {
-			duk_push_undefined(ctx);
+		tv_args = thr->valstack_bottom + idx_func + 1;
+		if (tv_args == thr->valstack_top) {
+			thr->valstack_top++;
+			DUK_ASSERT(DUK_TVAL_IS_UNDEFINED(thr->valstack_top));  /* valstack init policy */
 		}
-		duk_remove(ctx, idx_func);
 		break;
 	}
 	case 1: {  /* 1=Function.prototype.apply() */
 		/* Value stack:
-		 * idx_func + 0: Function.prototype.apply()
+		 * idx_func + 0: Function.prototype.apply()  [already removed above]
 		 * idx_func + 1: this binding for .apply (target function)
 		 * idx_func + 2: 1st argument to .apply, desired 'this' binding
 		 * idx_func + 3: 2nd argument to .apply, argArray
@@ -637,22 +646,16 @@ DUK_LOCAL void duk__handle_callapply_for_call(duk_hthread *thr, duk_idx_t idx_fu
 		 * ...
 		 */
 		DUK_ASSERT(natfunc == duk_bi_function_prototype_apply);
-		while (duk_get_top(ctx) < idx_func + 3) {
-			duk_push_undefined(ctx);
+		tv_args = thr->valstack_bottom + idx_func + 1;
+		if (tv_args == thr->valstack_top) {
+			thr->valstack_top++;
+			DUK_ASSERT(DUK_TVAL_IS_UNDEFINED(thr->valstack_top));  /* valstack init policy */
 		}
-		while (duk_get_top(ctx) > idx_func + 4) {
-			duk_pop(ctx);
-		}
-		duk_remove(ctx, idx_func);
-		if (duk_is_valid_index(ctx, idx_func + 2)) {
-			(void) duk_unpack_array_like(ctx, idx_func + 2);
-			duk_remove(ctx, idx_func + 2);
-		}
-		break;
+		goto clip_and_unpack;
 	}
 	default: {  /* 2=Reflect.apply() */
 		/* Value stack:
-		 * idx_func + 0: Reflect.apply()
+		 * idx_func + 0: Reflect.apply()  [already removed above]
 		 * idx_func + 1: this binding for .apply (ignored, usually Reflect)
 		 * idx_func + 2: 1st argument to .apply, target function
 		 * idx_func + 3: 2nd argument to .apply, desired 'this' binding
@@ -666,21 +669,27 @@ DUK_LOCAL void duk__handle_callapply_for_call(duk_hthread *thr, duk_idx_t idx_fu
 		 * ...
 		 */
 		DUK_ASSERT(natfunc == duk_bi_reflect_apply);
-		while (duk_get_top(ctx) < idx_func + 4) {
-			duk_push_undefined(ctx);
+		duk_remove(ctx, idx_func);  /* remove Reflect.apply 'this' binding */
+		tv_args = thr->valstack_bottom + idx_func + 1;
+		if (thr->valstack_top < tv_args + 2) {
+			thr->valstack_top = tv_args + 2;  /* one or two values may be missing */
 		}
-		while (duk_get_top(ctx) > idx_func + 5) {
-			duk_pop(ctx);
-		}
-		duk_remove(ctx, idx_func);
-		duk_remove(ctx, idx_func);
-		if (duk_is_valid_index(ctx, idx_func + 2)) {
-			(void) duk_unpack_array_like(ctx, idx_func + 2);
-			duk_remove(ctx, idx_func + 2);
-		}
-		break;
+		goto clip_and_unpack;
 	}
 	}
+
+	DUK_ASSERT(duk_get_top(ctx) >= idx_func + 2);
+	return;
+
+ clip_and_unpack:
+	if (thr->valstack_top > tv_args + 3) {
+		duk_set_top(ctx, idx_func + 3);  /* remove any args beyond argArray */
+	}
+	if (duk_is_valid_index(ctx, idx_func + 2)) {
+		(void) duk_unpack_array_like(ctx, idx_func + 2);
+		duk_remove(ctx, idx_func + 2);
+	}
+	DUK_ASSERT(duk_get_top(ctx) >= idx_func + 2);
 }
 
 /*
@@ -892,7 +901,11 @@ DUK_LOCAL duk_hobject *duk__nonbound_func_lookup(duk_context *ctx,
 	duk_tval *tv_func;
 	duk_hobject *func;
 
+	DUK_ASSERT(duk_get_top(ctx) >= idx_func + 2);
+
 	for (;;) {
+		DUK_ASSERT(duk_get_top(ctx) >= idx_func + 2);
+
 		/* Use loop to minimize code size of relookup after bound function case */
 		tv_func = DUK_GET_TVAL_POSIDX(ctx, idx_func);
 		DUK_ASSERT(tv_func != NULL);
